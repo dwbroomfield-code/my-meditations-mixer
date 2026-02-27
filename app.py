@@ -79,7 +79,7 @@ def mix():
             '-filter_complex', filter_complex,
             '-map', '[out]',
             '-t', str(total_duration) if total_duration > 0 else '9999',
-            '-b:a', '128k',
+            '-b:a', '256k',
             output_file
         ]
 
