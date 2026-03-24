@@ -69,7 +69,7 @@ def mix():
             num_inputs += 1
 
         total_duration = duration + extension_seconds
-        filter_parts.append(f'{mix_inputs}amix=inputs={num_inputs}:duration=longest[out]')
+        filter_parts.append(f'{mix_inputs}amix=inputs={num_inputs}:duration=longest:normalize=0[mixed];[mixed]loudnorm=I=-14:TP=-1:LRA=11[out]')
         filter_complex = ';'.join(filter_parts)
 
         logger.info(f"Filter complex: {filter_complex}")
