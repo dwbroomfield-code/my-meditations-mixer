@@ -69,7 +69,9 @@ def mix():
             num_inputs += 1
 
         total_duration = duration + extension_seconds
-        filter_parts.append(f'{mix_inputs}amix=inputs={num_inputs}:duration=longest:normalize=0[mixed];[mixed]loudnorm=I=-14:TP=-1:LRA=11[out]')
+        fade_start = max(0, total_duration - 5) if total_duration > 0 else 0
+        fade_filter = f';[normalized]afade=t=out:st={fade_start}:d=5[out]' if fade_start > 0 else ';[normalized]anull[out]'
+        filter_parts.append(f'{mix_inputs}amix=inputs={num_inputs}:duration=longest:normalize=0[mixed];[mixed]loudnorm=I=-14:TP=-1:LRA=11[normalized]' + fade_filter)
         filter_complex = ';'.join(filter_parts)
 
         logger.info(f"Filter complex: {filter_complex}")
