@@ -31,12 +31,13 @@ def mix():
     voice_file = None
     music_file = None
     soundscape_file = None
+    soundscape_files = []
     output_file = None
-    
+
     try:
         data = request.json
         logger.info(f"Mix request received: {data}")
-        
+
         voice_url = data['voice_url']
         music_url = data.get('music_url')
         soundscape_url = data.get('soundscape_url')
@@ -61,7 +62,29 @@ def mix():
             mix_inputs += '[m]'
             num_inputs += 1
 
-        if soundscape_url:
+        # Layered soundscapes: up to three tracks, each mixed at
+        # soundscape_volume x its baked-in level (0-100), matching the
+        # in-app preview. When the array is present it REPLACES the single
+        # soundscape_url (which the app still sends as the first track), so
+        # the first layer isn't mixed twice.
+        soundscapes = data.get('soundscapes') or []
+        if soundscapes:
+            for idx, sc in enumerate(soundscapes[:3]):
+                sc_url = sc.get('url') if isinstance(sc, dict) else None
+                if not sc_url:
+                    continue
+                try:
+                    level = float(sc.get('level', 100))
+                except (TypeError, ValueError):
+                    level = 100
+                sc_file = download_file(sc_url, '.mp3')
+                soundscape_files.append(sc_file)
+                inputs += ['-i', sc_file]
+                gain = soundscape_vol * (level / 100.0)
+                filter_parts.append(f'[{num_inputs}:a]volume={gain}[sc{idx}]')
+                mix_inputs += f'[sc{idx}]'
+                num_inputs += 1
+        elif soundscape_url:
             soundscape_file = download_file(soundscape_url, '.mp3')
             inputs += ['-i', soundscape_file]
             filter_parts.append(f'[{num_inputs}:a]volume={soundscape_vol}[s]')
@@ -104,7 +127,7 @@ def mix():
         return jsonify({'error': str(e)}), 500
     finally:
         # Cleanup temp files
-        for f in [voice_file, music_file, soundscape_file, output_file]:
+        for f in [voice_file, music_file, soundscape_file] + soundscape_files + [output_file]:
             if f and os.path.exists(f):
                 try:
                     os.unlink(f)
