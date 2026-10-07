@@ -54,8 +54,10 @@ def mix():
         # Lead-in: when backing tracks (music/soundscapes) exist, let them play
         # alone for 5 seconds before the voice enters; voice-only meditations
         # get a shorter 3-second silent breath so the start doesn't feel abrupt
-        # (but also doesn't read as a broken file).
-        lead_in_ms = 5000 if (music_url or soundscape_url) else 3000
+        # (but also doesn't read as a broken file). Skipped when the voice file
+        # already carries its own baked-in 5-second pad (AI voices, MP3
+        # uploads), so the total lead-in stays 5 seconds, not 10.
+        lead_in_ms = 0 if data.get('skip_lead_in') else (5000 if (music_url or soundscape_url) else 3000)
         inputs = ['-i', voice_file]
         filter_parts = [f'[0:a]volume={voice_vol},adelay={lead_in_ms}:all=1[v]']
         mix_inputs = '[v]'
@@ -147,8 +149,7 @@ def mix():
 def normalize():
     """Loudness-normalize a single audio file to -16 LUFS (the same spoken-word
     target Auphonic applies to clean-voice recordings). Accepts
-    {'audio_url': ...} or {'audio_base64': ...}; returns MP3 bytes. An optional
-    'lead_in_ms' prepends that much silence (AI voice recordings use 5000)."""
+    {'audio_url': ...} or {'audio_base64': ...}; returns MP3 bytes."""
     input_file = None
     output_file = None
     try:
