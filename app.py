@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify, Response
 import subprocess
 import requests
 import os
+import base64
 import uuid
 import tempfile
 import logging
@@ -50,8 +51,10 @@ def mix():
         voice_file = download_file(voice_url, '.webm')
         output_file = f'/tmp/{uuid.uuid4()}.mp3'
 
+        # Lead-in: 5 seconds when backing tracks exist, 3 seconds for voice-only.
+        lead_in_ms = 5000 if (music_url or soundscape_url) else 3000
         inputs = ['-i', voice_file]
-        filter_parts = [f'[0:a]volume={voice_vol}[v]']
+        filter_parts = [f'[0:a]volume={voice_vol},adelay={lead_in_ms}:all=1[v]']
         mix_inputs = '[v]'
         num_inputs = 1
 
@@ -62,11 +65,9 @@ def mix():
             mix_inputs += '[m]'
             num_inputs += 1
 
-        # Layered soundscapes: up to three tracks, each mixed at
-        # soundscape_volume x its baked-in level (0-100), matching the
-        # in-app preview. When the array is present it REPLACES the single
-        # soundscape_url (which the app still sends as the first track), so
-        # the first layer isn't mixed twice.
+        # Layered soundscapes: up to three tracks, each at
+        # soundscape_volume x its baked-in level (0-100). When present it
+        # REPLACES the single soundscape_url so the first layer isn't doubled.
         soundscapes = data.get('soundscapes') or []
         if soundscapes:
             for idx, sc in enumerate(soundscapes[:3]):
@@ -92,6 +93,8 @@ def mix():
             num_inputs += 1
 
         total_duration = duration + extension_seconds
+        if total_duration > 0:
+            total_duration += lead_in_ms / 1000
         fade_start = max(0, total_duration - 5) if total_duration > 0 else 0
         fade_filter = f';[normalized]afade=t=out:st={fade_start}:d=5[out]' if fade_start > 0 else ';[normalized]anull[out]'
         filter_parts.append(f'{mix_inputs}amix=inputs={num_inputs}:duration=longest:normalize=0[mixed];[mixed]loudnorm=I=-14:TP=-1:LRA=11[normalized]' + fade_filter)
@@ -109,14 +112,13 @@ def mix():
         ]
 
         logger.info(f"Running ffmpeg command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        logger.info(f"ffmpeg completed successfully")
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        logger.info("ffmpeg completed successfully")
 
         with open(output_file, 'rb') as f:
             mp3_data = f.read()
 
         logger.info(f"Generated MP3 file: {len(mp3_data)} bytes")
-
         return Response(mp3_data, mimetype='audio/mpeg')
 
     except subprocess.CalledProcessError as e:
@@ -126,12 +128,59 @@ def mix():
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
     finally:
-        # Cleanup temp files
         for f in [voice_file, music_file, soundscape_file] + soundscape_files + [output_file]:
             if f and os.path.exists(f):
                 try:
                     os.unlink(f)
                     logger.info(f"Cleaned up {f}")
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup {f}: {e}")
+
+@app.route('/normalize', methods=['POST'])
+def normalize():
+    """Loudness-normalize a single audio file to -16 LUFS (same spoken-word
+    target Auphonic uses). Accepts {'audio_url': ...} or {'audio_base64': ...};
+    returns MP3 bytes."""
+    input_file = None
+    output_file = None
+    try:
+        data = request.json
+        logger.info("Normalize request received")
+
+        if data.get('audio_base64'):
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+            tmp.write(base64.b64decode(data['audio_base64']))
+            tmp.close()
+            input_file = tmp.name
+        elif data.get('audio_url'):
+            input_file = download_file(data['audio_url'], '.mp3')
+        else:
+            return jsonify({'error': 'audio_url or audio_base64 required'}), 400
+
+        output_file = f'/tmp/{uuid.uuid4()}.mp3'
+        cmd = ['ffmpeg', '-y', '-i', input_file,
+               '-filter:a', 'loudnorm=I=-16:TP=-1:LRA=11',
+               '-b:a', '128k',
+               output_file]
+        logger.info(f"Running ffmpeg command: {' '.join(cmd)}")
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+        with open(output_file, 'rb') as f:
+            mp3_data = f.read()
+        logger.info(f"Normalized MP3 file: {len(mp3_data)} bytes")
+        return Response(mp3_data, mimetype='audio/mpeg')
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"ffmpeg error: {e.stderr}")
+        return jsonify({'error': f'Audio normalization failed: {e.stderr}'}), 500
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+    finally:
+        for f in [input_file, output_file]:
+            if f and os.path.exists(f):
+                try:
+                    os.unlink(f)
                 except Exception as e:
                     logger.warning(f"Failed to cleanup {f}: {e}")
 
