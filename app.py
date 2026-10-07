@@ -51,7 +51,10 @@ def mix():
         voice_file = download_file(voice_url, '.webm')
         output_file = f'/tmp/{uuid.uuid4()}.mp3'
 
-        # Lead-in: 5 seconds when backing tracks exist, 3 seconds for voice-only.
+        # Lead-in: when backing tracks (music/soundscapes) exist, let them play
+        # alone for 5 seconds before the voice enters; voice-only meditations
+        # get a shorter 3-second silent breath so the start doesn't feel abrupt
+        # (but also doesn't read as a broken file).
         lead_in_ms = 5000 if (music_url or soundscape_url) else 3000
         inputs = ['-i', voice_file]
         filter_parts = [f'[0:a]volume={voice_vol},adelay={lead_in_ms}:all=1[v]']
@@ -65,9 +68,11 @@ def mix():
             mix_inputs += '[m]'
             num_inputs += 1
 
-        # Layered soundscapes: up to three tracks, each at
-        # soundscape_volume x its baked-in level (0-100). When present it
-        # REPLACES the single soundscape_url so the first layer isn't doubled.
+        # Layered soundscapes: up to three tracks, each mixed at
+        # soundscape_volume x its baked-in level (0-100), matching the
+        # in-app preview. When the array is present it REPLACES the single
+        # soundscape_url (which the app still sends as the first track), so
+        # the first layer isn't mixed twice.
         soundscapes = data.get('soundscapes') or []
         if soundscapes:
             for idx, sc in enumerate(soundscapes[:3]):
@@ -112,13 +117,14 @@ def mix():
         ]
 
         logger.info(f"Running ffmpeg command: {' '.join(cmd)}")
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
-        logger.info("ffmpeg completed successfully")
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        logger.info(f"ffmpeg completed successfully")
 
         with open(output_file, 'rb') as f:
             mp3_data = f.read()
 
         logger.info(f"Generated MP3 file: {len(mp3_data)} bytes")
+
         return Response(mp3_data, mimetype='audio/mpeg')
 
     except subprocess.CalledProcessError as e:
@@ -128,6 +134,7 @@ def mix():
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         return jsonify({'error': str(e)}), 500
     finally:
+        # Cleanup temp files
         for f in [voice_file, music_file, soundscape_file] + soundscape_files + [output_file]:
             if f and os.path.exists(f):
                 try:
@@ -138,9 +145,10 @@ def mix():
 
 @app.route('/normalize', methods=['POST'])
 def normalize():
-    """Loudness-normalize a single audio file to -16 LUFS (same spoken-word
-    target Auphonic uses). Accepts {'audio_url': ...} or {'audio_base64': ...};
-    returns MP3 bytes."""
+    """Loudness-normalize a single audio file to -16 LUFS (the same spoken-word
+    target Auphonic applies to clean-voice recordings). Accepts
+    {'audio_url': ...} or {'audio_base64': ...}; returns MP3 bytes. An optional
+    'lead_in_ms' prepends that much silence (AI voice recordings use 5000)."""
     input_file = None
     output_file = None
     try:
@@ -158,8 +166,15 @@ def normalize():
             return jsonify({'error': 'audio_url or audio_base64 required'}), 400
 
         output_file = f'/tmp/{uuid.uuid4()}.mp3'
+        # Optional lead-in: prepend silence (adelay) AFTER normalization, so
+        # loudness is measured on the voice content alone. AI voice recordings
+        # use this for the same 5-second pad baked into uploaded voice files.
+        lead_in_ms = int(data.get('lead_in_ms', 0) or 0)
+        filter_str = 'loudnorm=I=-16:TP=-1:LRA=11'
+        if lead_in_ms > 0:
+            filter_str += f',adelay={lead_in_ms}:all=1'
         cmd = ['ffmpeg', '-y', '-i', input_file,
-               '-filter:a', 'loudnorm=I=-16:TP=-1:LRA=11',
+               '-filter:a', filter_str,
                '-b:a', '128k',
                output_file]
         logger.info(f"Running ffmpeg command: {' '.join(cmd)}")
