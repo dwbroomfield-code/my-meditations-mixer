@@ -45,7 +45,14 @@ def mix():
         voice_vol = float(data.get('voice_volume', 70)) / 100
         music_vol = float(data.get('music_volume', 40)) / 100
         soundscape_vol = float(data.get('soundscape_volume', 30)) / 100
-        extension_seconds = int(data.get('extension_minutes', 0)) * 60
+        # Second-precision tail extension when the caller supplies it (e.g. the
+        # auto-generator pads the gap between the actual voice length and the
+        # requested meditation length); falls back to whole extension_minutes.
+        raw_ext = data.get('extension_seconds')
+        if raw_ext is None:
+            extension_seconds = int(data.get('extension_minutes', 0)) * 60
+        else:
+            extension_seconds = int(raw_ext)
         duration = int(data.get('duration', 0))
 
         voice_file = download_file(voice_url, '.webm')
