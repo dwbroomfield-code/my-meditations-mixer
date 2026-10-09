@@ -63,10 +63,28 @@ def mix():
         mix_inputs = '[v]'
         num_inputs = 1
 
+        # Tail: how long the backing tracks keep playing after the voice ends.
+        # With no chosen extension the music still plays 5 extra seconds and
+        # fades out over them, so a mix never ends on an abrupt cut. Voice-only
+        # mixes end with the voice. The fade is applied to the backing tracks
+        # only — the voice itself never fades.
+        has_backing = bool(music_url or soundscape_url or data.get('soundscapes'))
+        tail_seconds = (extension_seconds if extension_seconds > 0 else 5) if has_backing else 0
+        # All backing streams start at 0 and the voice ends at duration +
+        # lead-in, so the fade lands at the same point on every stream's own
+        # timeline: the last 5 seconds of the tail (or the whole tail when it
+        # is shorter than 5 seconds).
+        if tail_seconds > 0:
+            fade_d = min(tail_seconds, 5)
+            fade_st = max(0, duration + lead_in_ms / 1000 + tail_seconds - fade_d)
+            backing_fade = f',afade=t=out:st={fade_st}:d={fade_d}'
+        else:
+            backing_fade = ''
+
         if music_url:
             music_file = download_file(music_url, '.mp3')
             inputs += ['-i', music_file]
-            filter_parts.append(f'[{num_inputs}:a]volume={music_vol}[m]')
+            filter_parts.append(f'[{num_inputs}:a]volume={music_vol}{backing_fade}[m]')
             mix_inputs += '[m]'
             num_inputs += 1
 
@@ -89,22 +107,22 @@ def mix():
                 soundscape_files.append(sc_file)
                 inputs += ['-i', sc_file]
                 gain = soundscape_vol * (level / 100.0)
-                filter_parts.append(f'[{num_inputs}:a]volume={gain}[sc{idx}]')
+                filter_parts.append(f'[{num_inputs}:a]volume={gain}{backing_fade}[sc{idx}]')
                 mix_inputs += f'[sc{idx}]'
                 num_inputs += 1
         elif soundscape_url:
             soundscape_file = download_file(soundscape_url, '.mp3')
             inputs += ['-i', soundscape_file]
-            filter_parts.append(f'[{num_inputs}:a]volume={soundscape_vol}[s]')
+            filter_parts.append(f'[{num_inputs}:a]volume={soundscape_vol}{backing_fade}[s]')
             mix_inputs += '[s]'
             num_inputs += 1
 
-        total_duration = duration + extension_seconds
+        total_duration = duration + tail_seconds
         if total_duration > 0:
             total_duration += lead_in_ms / 1000
-        fade_start = max(0, total_duration - 5) if total_duration > 0 else 0
-        fade_filter = f';[normalized]afade=t=out:st={fade_start}:d=5[out]' if fade_start > 0 else ';[normalized]anull[out]'
-        filter_parts.append(f'{mix_inputs}amix=inputs={num_inputs}:duration=longest:normalize=0[mixed];[mixed]loudnorm=I=-14:TP=-1:LRA=11[normalized]' + fade_filter)
+        # No whole-mix fade: the voice ends naturally (never faded), and the
+        # backing tracks carry their own tail fade applied above.
+        filter_parts.append(f'{mix_inputs}amix=inputs={num_inputs}:duration=longest:normalize=0[mixed];[mixed]loudnorm=I=-14:TP=-1:LRA=11[normalized]')
         filter_complex = ';'.join(filter_parts)
 
         logger.info(f"Filter complex: {filter_complex}")
@@ -112,7 +130,7 @@ def mix():
 
         cmd = ['ffmpeg', '-y'] + inputs + [
             '-filter_complex', filter_complex,
-            '-map', '[out]',
+            '-map', '[normalized]',
             '-t', str(total_duration) if total_duration > 0 else '9999',
             '-b:a', '256k',
             output_file
