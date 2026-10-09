@@ -63,13 +63,14 @@ def mix():
         mix_inputs = '[v]'
         num_inputs = 1
 
-        # Tail: how long the backing tracks keep playing after the voice ends.
-        # With no chosen extension the music still plays 5 extra seconds and
-        # fades out over them, so a mix never ends on an abrupt cut. Voice-only
-        # mixes end with the voice. The fade is applied to the backing tracks
-        # only — the voice itself never fades.
+        # Tail: how long the mix keeps running after the voice ends. With no
+        # chosen extension that is 5 seconds for every meditation. When backing
+        # tracks (music/soundscapes) exist they keep playing through it and fade
+        # out over it; voice-only mixes get the same 5 seconds as silence, so
+        # every meditation breathes out instead of cutting off at the last word.
+        # The fade is applied to the backing tracks only — the voice never fades.
         has_backing = bool(music_url or soundscape_url or data.get('soundscapes'))
-        tail_seconds = (extension_seconds if extension_seconds > 0 else 5) if has_backing else 0
+        tail_seconds = extension_seconds if extension_seconds > 0 else 5
         # All backing streams start at 0 and the voice ends at duration +
         # lead-in, so the fade lands at the same point on every stream's own
         # timeline: the last 5 seconds of the tail (or the whole tail when it
@@ -122,7 +123,14 @@ def mix():
             total_duration += lead_in_ms / 1000
         # No whole-mix fade: the voice ends naturally (never faded), and the
         # backing tracks carry their own tail fade applied above.
-        filter_parts.append(f'{mix_inputs}amix=inputs={num_inputs}:duration=longest:normalize=0[mixed];[mixed]loudnorm=I=-14:TP=-1:LRA=11[normalized]')
+        mix_chain = f'{mix_inputs}amix=inputs={num_inputs}:duration=longest:normalize=0[mixed];[mixed]loudnorm=I=-14:TP=-1:LRA=11[normalized]'
+        output_stream = '[normalized]'
+        if not has_backing and tail_seconds > 0:
+            # Voice-only: the tail is silence. Pad after normalization, so the
+            # loudness measurement is still taken on the voice content alone.
+            mix_chain += f';[normalized]apad=pad_dur={tail_seconds}[padded]'
+            output_stream = '[padded]'
+        filter_parts.append(mix_chain)
         filter_complex = ';'.join(filter_parts)
 
         logger.info(f"Filter complex: {filter_complex}")
@@ -130,7 +138,7 @@ def mix():
 
         cmd = ['ffmpeg', '-y'] + inputs + [
             '-filter_complex', filter_complex,
-            '-map', '[normalized]',
+            '-map', output_stream,
             '-t', str(total_duration) if total_duration > 0 else '9999',
             '-b:a', '256k',
             output_file
