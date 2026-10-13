@@ -58,13 +58,16 @@ def mix():
         voice_file = download_file(voice_url, '.webm')
         output_file = f'/tmp/{uuid.uuid4()}.mp3'
 
+        # Music/soundscape-only meditations carry a silent "voice" that already
+        # spans the exact chosen length: no lead-in buffer at all.
+        ambient_only = bool(data.get('ambient_only'))
         # Lead-in: when backing tracks (music/soundscapes) exist, let them play
         # alone for 5 seconds before the voice enters; voice-only meditations
         # get a shorter 3-second silent breath so the start doesn't feel abrupt
         # (but also doesn't read as a broken file). Skipped when the voice file
         # already carries its own baked-in 5-second pad (AI voices, MP3
         # uploads), so the total lead-in stays 5 seconds, not 10.
-        lead_in_ms = 0 if data.get('skip_lead_in') else (5000 if (music_url or soundscape_url) else 3000)
+        lead_in_ms = 0 if (data.get('skip_lead_in') or ambient_only) else (5000 if (music_url or soundscape_url) else 3000)
         inputs = ['-i', voice_file]
         filter_parts = [f'[0:a]volume={voice_vol},adelay={lead_in_ms}:all=1[v]']
         mix_inputs = '[v]'
@@ -77,12 +80,22 @@ def mix():
         # every meditation breathes out instead of cutting off at the last word.
         # The fade is applied to the backing tracks only — the voice never fades.
         has_backing = bool(music_url or soundscape_url or data.get('soundscapes'))
-        tail_seconds = extension_seconds if extension_seconds > 0 else 5
+        if ambient_only:
+            # No buffers: the mix runs for exactly `duration`. The 5-second
+            # fade out stays, living inside the duration instead of adding to it.
+            tail_seconds = 0
+        else:
+            tail_seconds = extension_seconds if extension_seconds > 0 else 5
         # All backing streams start at 0 and the voice ends at duration +
         # lead-in, so the fade lands at the same point on every stream's own
         # timeline: the last 5 seconds of the tail (or the whole tail when it
-        # is shorter than 5 seconds).
-        if tail_seconds > 0:
+        # is shorter than 5 seconds). Ambient-only: the fade covers the last
+        # 5 seconds of the duration itself.
+        if ambient_only and duration > 0:
+            fade_d = min(5, duration)
+            fade_st = max(0, duration - fade_d)
+            backing_fade = f',afade=t=out:st={fade_st}:d={fade_d}'
+        elif tail_seconds > 0:
             fade_d = min(tail_seconds, 5)
             fade_st = max(0, duration + lead_in_ms / 1000 + tail_seconds - fade_d)
             backing_fade = f',afade=t=out:st={fade_st}:d={fade_d}'
